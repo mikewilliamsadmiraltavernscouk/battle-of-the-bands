@@ -87,10 +87,13 @@ export default function App() {
       setSearching(true);
       setSearchError(null);
       try {
-        const artists = await spotifySearchService.searchArtists(query);
+        const [artists, albums] = await Promise.all([
+          spotifySearchService.searchArtists(query),
+          spotifySearchService.search(query),
+        ]);
         if (!cancelled) {
           setArtistResults(artists);
-          setSearchResults([]);
+          setSearchResults(albums);
         }
       } catch (error) {
         if (!cancelled) {
