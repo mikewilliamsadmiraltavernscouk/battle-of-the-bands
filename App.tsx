@@ -121,7 +121,7 @@ export default function App() {
     setSearchError(null);
 
     try {
-      const albums = await spotifySearchService.getArtistAlbums(artist.id);
+      const albums = await spotifySearchService.getArtistAlbums(artist);
       setArtistAlbums(albums);
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : 'Spotify albums could not be loaded.');
@@ -814,7 +814,7 @@ function RoomScreen({
           {selectedArtist ? (
             artistAlbums.length === 0 && !searching ? (
               <Text style={styles.statusText}>
-                No albums loaded yet. Spotify may be cooling down after too many requests; try Back to artists and select this artist again in a moment.
+                No albums found for this artist. Try Back to artists and search a more specific name.
               </Text>
             ) : artistAlbums.map((album) => {
               const isAdded = sharedList.some((item) => item.id === album.id);

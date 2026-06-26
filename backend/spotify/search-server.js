@@ -13,7 +13,6 @@ let tokenExpiresAt = 0;
 const artistAlbumCache = new Map();
 const ARTIST_ALBUM_CACHE_MS = 10 * 60 * 1000;
 const MAX_ARTIST_ALBUMS = 100;
-const MAX_ARTIST_ALBUM_PAGES = 4;
 
 const server = http.createServer(async (request, response) => {
   setCorsHeaders(response);
@@ -75,7 +74,8 @@ const server = http.createServer(async (request, response) => {
     const artistAlbumsMatch = url.pathname.match(/^\/spotify\/artists\/([^/]+)\/albums$/);
     if (artistAlbumsMatch) {
       const artistId = decodeURIComponent(artistAlbumsMatch[1]);
-      const albums = await fetchArtistAlbums(accessToken, artistId);
+      const artistName = url.searchParams.get('artist')?.trim() ?? '';
+      const albums = await fetchArtistAlbums(accessToken, artistId, artistName);
       sendJson(response, 200, { albums });
       return;
     }
@@ -146,64 +146,88 @@ async function spotifyFetch(accessToken, path, params = {}) {
   return response.json();
 }
 
-async function fetchArtistAlbums(accessToken, artistId) {
-  const cached = artistAlbumCache.get(artistId);
+async function fetchArtistAlbums(accessToken, artistId, artistName) {
+  const cacheKey = artistName ? `name:${artistName.toLowerCase()}` : `id:${artistId}`;
+  const cached = artistAlbumCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return cached.albums;
   }
 
-  const albums = [];
-  const seenAlbumKeys = new Set();
-  let offset = 0;
-  let total = Number.POSITIVE_INFINITY;
-  let pagesLoaded = 0;
+  const albums = artistName
+    ? dedupeAlbums([
+      ...await fetchFirstArtistAlbumPage(accessToken, artistId),
+      ...await searchAlbumsByArtistName(accessToken, artistName),
+    ])
+    : await fetchFirstArtistAlbumPage(accessToken, artistId);
 
-  while (offset < total && albums.length < MAX_ARTIST_ALBUMS && pagesLoaded < MAX_ARTIST_ALBUM_PAGES) {
-    let data;
-    try {
-      data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
-        include_groups: 'album,single',
-        market: 'GB',
-        offset: String(offset),
-      });
-    } catch (error) {
-      if (isSpotifyRateLimitError(error)) {
-        break;
-      }
-
-      throw error;
-    }
-
-    const items = data.items ?? [];
-    for (const album of items) {
-      const dedupeKey = `${album.album_group ?? album.album_type}:${normalizeAlbumName(album.name)}`;
-      if (seenAlbumKeys.has(dedupeKey)) {
-        continue;
-      }
-
-      seenAlbumKeys.add(dedupeKey);
-      albums.push(toAlbumPick(album));
-      if (albums.length >= MAX_ARTIST_ALBUMS) {
-        break;
-      }
-    }
-
-    const pageSize = Number(data.limit ?? items.length);
-    total = Number(data.total ?? albums.length);
-    if (!items.length || !pageSize) {
-      break;
-    }
-
-    offset += pageSize;
-    pagesLoaded += 1;
-  }
-
-  artistAlbumCache.set(artistId, {
+  artistAlbumCache.set(cacheKey, {
     albums,
     expiresAt: Date.now() + ARTIST_ALBUM_CACHE_MS,
   });
 
   return albums;
+}
+
+async function searchAlbumsByArtistName(accessToken, artistName) {
+  try {
+    const data = await spotifyFetch(accessToken, '/v1/search', {
+      q: artistName,
+      type: 'album',
+      market: 'GB',
+    });
+
+    const items = data.albums?.items ?? [];
+    const exactMatches = items.filter((album) => albumMatchesArtist(album, artistName));
+    return exactMatches.length >= 3 ? exactMatches : items;
+  } catch (error) {
+    if (isSpotifyRateLimitError(error)) {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
+async function fetchFirstArtistAlbumPage(accessToken, artistId) {
+  try {
+    const data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
+      include_groups: 'album,single',
+      market: 'GB',
+    });
+
+    return dedupeAlbums(data.items ?? []);
+  } catch (error) {
+    if (isSpotifyRateLimitError(error)) {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
+function dedupeAlbums(items) {
+  const seenAlbumKeys = new Set();
+  const albums = [];
+
+  for (const album of items) {
+    const primaryArtist = album.artists?.[0]?.name?.toLowerCase() ?? '';
+    const dedupeKey = `${primaryArtist}:${normalizeAlbumName(album.name)}`;
+    if (seenAlbumKeys.has(dedupeKey)) {
+      continue;
+    }
+
+    seenAlbumKeys.add(dedupeKey);
+    albums.push(toAlbumPick(album));
+    if (albums.length >= MAX_ARTIST_ALBUMS) {
+      break;
+    }
+  }
+
+  return albums.sort((left, right) => {
+    const leftDate = left.releaseDate ?? '';
+    const rightDate = right.releaseDate ?? '';
+    return rightDate.localeCompare(leftDate);
+  });
 }
 
 function toMusicPick(album) {
@@ -252,6 +276,15 @@ function normalizeAlbumName(name) {
     .replace(/\s*[-(]\s*(deluxe|expanded|remaster(?:ed)?|anniversary|collector'?s|special|explicit|clean|version|edition|mix).*$/i, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+function albumMatchesArtist(album, artistName) {
+  const normalizedArtistName = normalizeArtistName(artistName);
+  return (album.artists ?? []).some((artist) => normalizeArtistName(artist.name) === normalizedArtistName);
+}
+
+function normalizeArtistName(name) {
+  return name.toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
 function isSpotifyRateLimitError(error) {

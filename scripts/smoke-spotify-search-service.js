@@ -81,9 +81,13 @@ const originalSetTimeout = global.setTimeout;
   assert.equal(artists[0].name, 'Test Artist');
   assert.equal(requestedUrls[1], 'https://example.com/spotify/artists?q=queen');
 
-  const albums = await service.getArtistAlbums('artist-1');
+  const albums = await service.getArtistAlbums({
+    id: 'artist-1',
+    name: 'Test Artist',
+    spotifyUrl: 'spotify:artist:artist-1',
+  });
   assert.equal(albums[0].albumId, 'album-1');
-  assert.equal(requestedUrls[2], 'https://example.com/spotify/artists/artist-1/albums');
+  assert.equal(requestedUrls[2], 'https://example.com/spotify/artists/artist-1/albums?artist=Test+Artist');
 
   const tracks = await service.getAlbumTracks('album-1');
   assert.equal(tracks[0].trackNumber, 1);

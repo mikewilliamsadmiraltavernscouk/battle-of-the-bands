@@ -6,7 +6,7 @@ const SEARCH_TIMEOUT_MS = 8000;
 export type SpotifySearchService = {
   search: (query: string) => Promise<MusicPick[]>;
   searchArtists: (query: string) => Promise<SpotifyArtist[]>;
-  getArtistAlbums: (artistId: string) => Promise<SpotifyAlbum[]>;
+  getArtistAlbums: (artist: SpotifyArtist) => Promise<SpotifyAlbum[]>;
   getAlbumTracks: (albumId: string) => Promise<SpotifyTrack[]>;
 };
 
@@ -54,8 +54,11 @@ export function createBackendSpotifySearchService(endpoint: string): SpotifySear
       const data = await getJson<{ artists?: SpotifyArtist[] }>(endpointFor(endpoint, '/spotify/artists'), { q: query });
       return data.artists ?? [];
     },
-    async getArtistAlbums(artistId) {
-      const data = await getJson<{ albums?: SpotifyAlbum[] }>(endpointFor(endpoint, `/spotify/artists/${artistId}/albums`));
+    async getArtistAlbums(artist) {
+      const data = await getJson<{ albums?: SpotifyAlbum[] }>(
+        endpointFor(endpoint, `/spotify/artists/${artist.id}/albums`),
+        { artist: artist.name },
+      );
       return data.albums ?? [];
     },
     async getAlbumTracks(albumId) {
