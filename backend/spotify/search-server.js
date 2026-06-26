@@ -177,8 +177,7 @@ async function searchAlbumsByArtistName(accessToken, artistName) {
     });
 
     const items = data.albums?.items ?? [];
-    const exactMatches = items.filter((album) => albumMatchesArtist(album, artistName));
-    return exactMatches.length >= 3 ? exactMatches : items;
+    return items.filter((album) => albumMatchesArtist(album, artistName));
   } catch (error) {
     if (isSpotifyRateLimitError(error)) {
       return [];
