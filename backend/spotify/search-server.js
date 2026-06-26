@@ -7,6 +7,8 @@ loadLocalEnv();
 const port = Number(process.env.PORT ?? 8787);
 const clientId = process.env.SPOTIFY_CLIENT_ID;
 const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+const supabaseUrl = process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY ?? process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 let cachedToken = null;
 let tokenExpiresAt = 0;
@@ -153,6 +155,15 @@ async function fetchArtistAlbums(accessToken, artistId) {
     return cached.albums;
   }
 
+  const durableCachedAlbums = await readArtistAlbumCache(artistId);
+  if (durableCachedAlbums) {
+    artistAlbumCache.set(artistId, {
+      albums: durableCachedAlbums,
+      expiresAt: Date.now() + ARTIST_ALBUM_CACHE_MS,
+    });
+    return durableCachedAlbums;
+  }
+
   const albums = [];
   const seenAlbumKeys = new Set();
   let offset = 0;
@@ -195,22 +206,84 @@ async function fetchArtistAlbums(accessToken, artistId) {
     }
 
     if (albums.length > 0) {
-      artistAlbumCache.set(artistId, {
-        albums,
-        expiresAt: Date.now() + ARTIST_ALBUM_CACHE_MS,
-      });
+      await writeArtistAlbumCache(artistId, albums);
       return albums;
     }
 
     throw error;
   }
 
-  artistAlbumCache.set(artistId, {
-    albums,
-    expiresAt: Date.now() + ARTIST_ALBUM_CACHE_MS,
-  });
+  await writeArtistAlbumCache(artistId, albums);
 
   return albums;
+}
+
+async function readArtistAlbumCache(artistId) {
+  if (!hasSupabaseCache()) {
+    return null;
+  }
+
+  try {
+    const response = await supabaseRequest(
+      `spotify_artist_album_cache?artist_id=eq.${encodeURIComponent(artistId)}&expires_at=gt.${encodeURIComponent(new Date().toISOString())}&select=albums`,
+    );
+    const rows = await response.json();
+    return Array.isArray(rows) && Array.isArray(rows[0]?.albums) ? rows[0].albums : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeArtistAlbumCache(artistId, albums) {
+  const expiresAt = Date.now() + ARTIST_ALBUM_CACHE_MS;
+  artistAlbumCache.set(artistId, {
+    albums,
+    expiresAt,
+  });
+
+  if (!hasSupabaseCache()) {
+    return;
+  }
+
+  try {
+    await supabaseRequest('spotify_artist_album_cache?on_conflict=artist_id', {
+      method: 'POST',
+      headers: {
+        Prefer: 'resolution=merge-duplicates',
+      },
+      body: JSON.stringify({
+        artist_id: artistId,
+        albums,
+        cached_at: new Date().toISOString(),
+        expires_at: new Date(expiresAt).toISOString(),
+      }),
+    });
+  } catch {
+    // The memory cache is still enough for the current Render process.
+  }
+}
+
+async function supabaseRequest(path, options = {}) {
+  const response = await fetch(`${supabaseUrl}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: supabaseAnonKey,
+      Authorization: `Bearer ${supabaseAnonKey}`,
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Supabase cache request failed: ${response.status} ${message}`);
+  }
+
+  return response;
+}
+
+function hasSupabaseCache() {
+  return Boolean(supabaseUrl && supabaseAnonKey);
 }
 
 async function spotifyFetchWithRetry(accessToken, path, params = {}) {

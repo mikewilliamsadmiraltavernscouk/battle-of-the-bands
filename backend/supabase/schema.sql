@@ -50,10 +50,18 @@ create table public.match_votes (
   unique (match_id, member_id)
 );
 
+create table public.spotify_artist_album_cache (
+  artist_id text primary key,
+  albums jsonb not null,
+  cached_at timestamptz not null default now(),
+  expires_at timestamptz not null
+);
+
 create index room_members_room_id_idx on public.room_members(room_id);
 create index room_picks_room_id_idx on public.room_picks(room_id);
 create index battle_matches_room_id_idx on public.battle_matches(room_id);
 create index match_votes_match_id_idx on public.match_votes(match_id);
+create index spotify_artist_album_cache_expires_at_idx on public.spotify_artist_album_cache(expires_at);
 
 create or replace function public.enforce_room_pick_limit()
 returns trigger
@@ -91,6 +99,7 @@ alter table public.room_members enable row level security;
 alter table public.room_picks enable row level security;
 alter table public.battle_matches enable row level security;
 alter table public.match_votes enable row level security;
+alter table public.spotify_artist_album_cache enable row level security;
 
 create policy "rooms are readable by invite code"
   on public.rooms
@@ -214,6 +223,22 @@ create policy "match votes can be reset by app clients"
   on public.match_votes
   for delete
   using (true);
+
+create policy "spotify album cache is readable"
+  on public.spotify_artist_album_cache
+  for select
+  using (true);
+
+create policy "spotify album cache can be written by backend"
+  on public.spotify_artist_album_cache
+  for insert
+  with check (true);
+
+create policy "spotify album cache can be refreshed by backend"
+  on public.spotify_artist_album_cache
+  for update
+  using (true)
+  with check (true);
 
 create or replace function public.start_room_battle(
   p_room_code text,

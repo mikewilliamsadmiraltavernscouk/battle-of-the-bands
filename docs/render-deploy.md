@@ -35,8 +35,14 @@ Add these in Render:
 ```text
 SPOTIFY_CLIENT_ID=your-spotify-client-id
 SPOTIFY_CLIENT_SECRET=your-spotify-client-secret
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key
 PORT=10000
 ```
+
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` let the Spotify backend cache artist album lists in Supabase. This reduces repeated Spotify requests and avoids rate-limit problems when several users select the same artist.
+
+Before relying on this cache, run the latest `backend/supabase/schema.sql` in the Supabase SQL editor so the `spotify_artist_album_cache` table exists.
 
 ## 4. Test The Render URL
 
