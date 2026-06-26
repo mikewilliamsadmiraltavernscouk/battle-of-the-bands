@@ -71,11 +71,8 @@ const server = http.createServer(async (request, response) => {
     const artistAlbumsMatch = url.pathname.match(/^\/spotify\/artists\/([^/]+)\/albums$/);
     if (artistAlbumsMatch) {
       const artistId = decodeURIComponent(artistAlbumsMatch[1]);
-      const data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
-        include_groups: 'album,single',
-        market: 'GB',
-      });
-      sendJson(response, 200, { albums: (data.items ?? []).map(toAlbumPick) });
+      const albums = await fetchArtistAlbums(accessToken, artistId);
+      sendJson(response, 200, { albums });
       return;
     }
 
@@ -145,6 +142,45 @@ async function spotifyFetch(accessToken, path, params = {}) {
   return response.json();
 }
 
+async function fetchArtistAlbums(accessToken, artistId) {
+  const albums = [];
+  const seenAlbumKeys = new Set();
+  let offset = 0;
+  let total = Number.POSITIVE_INFINITY;
+
+  while (offset < total && albums.length < 200) {
+    const data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
+      include_groups: 'album,single',
+      market: 'GB',
+      offset: String(offset),
+    });
+
+    const items = data.items ?? [];
+    for (const album of items) {
+      const dedupeKey = `${album.album_group ?? album.album_type}:${normalizeAlbumName(album.name)}`;
+      if (seenAlbumKeys.has(dedupeKey)) {
+        continue;
+      }
+
+      seenAlbumKeys.add(dedupeKey);
+      albums.push(toAlbumPick(album));
+      if (albums.length >= 200) {
+        break;
+      }
+    }
+
+    const pageSize = Number(data.limit ?? items.length);
+    total = Number(data.total ?? albums.length);
+    if (!items.length || !pageSize) {
+      break;
+    }
+
+    offset += pageSize;
+  }
+
+  return albums;
+}
+
 function toMusicPick(album) {
   return {
     id: album.uri,
@@ -183,6 +219,14 @@ function toTrackPick(track, album) {
     albumId: album.id,
     trackNumber: track.track_number ?? 0,
   };
+}
+
+function normalizeAlbumName(name) {
+  return name
+    .toLowerCase()
+    .replace(/\s*[-(]\s*(deluxe|expanded|remaster(?:ed)?|anniversary|collector'?s|special|explicit|clean|version|edition|mix).*$/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function sendJson(response, status, body) {
