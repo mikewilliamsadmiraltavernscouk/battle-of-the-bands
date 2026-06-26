@@ -74,6 +74,11 @@ const BACKGROUND_ARTISTS = [
   'David Bowie',
 ];
 
+type SavedRoomDetail = {
+  statusText: string;
+  winner: MusicPick | null;
+};
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
   const [room, setRoom] = useState<BattleRoom>(() => createDemoRoom());
@@ -94,7 +99,7 @@ export default function App() {
   const [nowPlaying, setNowPlaying] = useState<MusicPick | null>(null);
   const [restoringRoom, setRestoringRoom] = useState(roomRepositoryMode === 'supabase');
   const [savedRooms, setSavedRooms] = useState<SavedRoomSession[]>([]);
-  const [savedRoomWinners, setSavedRoomWinners] = useState<Record<string, MusicPick | null>>({});
+  const [savedRoomDetails, setSavedRoomDetails] = useState<Record<string, SavedRoomDetail>>({});
 
   const selectedMember = room.members.find((member) => member.id === selectedMemberId) ?? room.members[0];
   const isCurrentUserHost = Boolean(selectedMember?.isHost);
@@ -120,7 +125,7 @@ export default function App() {
         const sessions = await loadSavedRoomSessions();
         if (!cancelled) {
           setSavedRooms(sessions);
-          refreshSavedRoomWinners(sessions).catch(() => undefined);
+          refreshSavedRoomDetails(sessions).catch(() => undefined);
         }
 
         if (!session || cancelled) {
@@ -407,7 +412,7 @@ export default function App() {
     await saveLastRoomSession(session);
     const sessions = await loadSavedRoomSessions();
     setSavedRooms(sessions);
-    await refreshSavedRoomWinners(sessions);
+    await refreshSavedRoomDetails(sessions);
   }
 
   async function openSavedRoom(session: SavedRoomSession) {
@@ -431,32 +436,32 @@ export default function App() {
     await forgetSavedRoomSession(roomCode);
     const sessions = await loadSavedRoomSessions();
     setSavedRooms(sessions);
-    setSavedRoomWinners((current) => {
-      const nextWinners = { ...current };
-      delete nextWinners[roomCode];
-      return nextWinners;
+    setSavedRoomDetails((current) => {
+      const nextDetails = { ...current };
+      delete nextDetails[roomCode];
+      return nextDetails;
     });
-    await refreshSavedRoomWinners(sessions);
+    await refreshSavedRoomDetails(sessions);
   }
 
-  async function refreshSavedRoomWinners(sessions: SavedRoomSession[]) {
+  async function refreshSavedRoomDetails(sessions: SavedRoomSession[]) {
     if (roomRepositoryMode !== 'supabase' || sessions.length === 0) {
-      setSavedRoomWinners({});
+      setSavedRoomDetails({});
       return;
     }
 
-    const winnerEntries = await Promise.all(
+    const detailEntries = await Promise.all(
       sessions.map(async (session) => {
         try {
           const savedRoom = await roomRepository.joinRoom(session.roomCode, session.memberName);
-          return [session.roomCode, savedRoom.champion] as const;
+          return [session.roomCode, getSavedRoomDetail(savedRoom)] as const;
         } catch {
-          return [session.roomCode, null] as const;
+          return [session.roomCode, { statusText: 'Could not refresh details', winner: null }] as const;
         }
       }),
     );
 
-    setSavedRoomWinners(Object.fromEntries(winnerEntries));
+    setSavedRoomDetails(Object.fromEntries(detailEntries));
   }
 
   async function castVote(memberId: string, pick: MusicPick) {
@@ -551,7 +556,7 @@ export default function App() {
             searchMode={spotifySearchMode}
             restoringRoom={restoringRoom}
             savedRooms={savedRooms}
-            savedRoomWinners={savedRoomWinners}
+            savedRoomDetails={savedRoomDetails}
             setDisplayName={setDisplayName}
             setJoinCode={setJoinCode}
             setRoomLabel={setRoomLabel}
@@ -662,7 +667,7 @@ function HomeScreen({
   searchMode,
   restoringRoom,
   savedRooms,
-  savedRoomWinners,
+  savedRoomDetails,
   setDisplayName,
   setJoinCode,
   setRoomLabel,
@@ -678,7 +683,7 @@ function HomeScreen({
   searchMode: string;
   restoringRoom: boolean;
   savedRooms: SavedRoomSession[];
-  savedRoomWinners: Record<string, MusicPick | null>;
+  savedRoomDetails: Record<string, SavedRoomDetail>;
   setDisplayName: (value: string) => void;
   setJoinCode: (value: string) => void;
   setRoomLabel: (value: string) => void;
@@ -775,9 +780,14 @@ function HomeScreen({
                   <Text style={styles.album}>
                     {savedRoom.roomCode} - {savedRoom.memberName} - last opened {formatSavedRoomDate(savedRoom.lastOpenedAt)}
                   </Text>
-                  {savedRoomWinners[savedRoom.roomCode] ? (
+                  {savedRoomDetails[savedRoom.roomCode] ? (
+                    <Text style={styles.savedRoomStatus}>
+                      {savedRoomDetails[savedRoom.roomCode].statusText}
+                    </Text>
+                  ) : null}
+                  {savedRoomDetails[savedRoom.roomCode]?.winner ? (
                     <Text style={styles.savedRoomWinner}>
-                      Winner: {savedRoomWinners[savedRoom.roomCode]?.artist} - {savedRoomWinners[savedRoom.roomCode]?.album}
+                      Winner: {savedRoomDetails[savedRoom.roomCode].winner?.artist} - {savedRoomDetails[savedRoom.roomCode].winner?.album}
                     </Text>
                   ) : null}
                 </View>
@@ -1685,6 +1695,34 @@ function formatSavedRoomDate(value: string) {
   });
 }
 
+function getSavedRoomDetail(room: BattleRoom): SavedRoomDetail {
+  if (room.champion) {
+    return {
+      statusText: 'Complete',
+      winner: room.champion,
+    };
+  }
+
+  if (room.currentMatch) {
+    return {
+      statusText: `In battle - round ${room.round}`,
+      winner: null,
+    };
+  }
+
+  if (room.picks.length >= 2) {
+    return {
+      statusText: `Ready to battle - ${room.picks.length} picks`,
+      winner: null,
+    };
+  }
+
+  return {
+    statusText: `Waiting for picks - ${room.picks.length} of 2 needed`,
+    winner: null,
+  };
+}
+
 function toSpotifyAlbum(pick: MusicPick): SpotifyAlbum {
   return {
     ...pick,
@@ -2088,6 +2126,13 @@ const styles = StyleSheet.create({
   },
   savedRoomText: {
     gap: 2,
+  },
+  savedRoomStatus: {
+    marginTop: 4,
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
   },
   savedRoomWinner: {
     marginTop: 4,
