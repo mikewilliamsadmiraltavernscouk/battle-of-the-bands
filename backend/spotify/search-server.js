@@ -10,6 +10,10 @@ const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
 
 let cachedToken = null;
 let tokenExpiresAt = 0;
+const artistAlbumCache = new Map();
+const ARTIST_ALBUM_CACHE_MS = 10 * 60 * 1000;
+const MAX_ARTIST_ALBUMS = 100;
+const MAX_ARTIST_ALBUM_PAGES = 4;
 
 const server = http.createServer(async (request, response) => {
   setCorsHeaders(response);
@@ -143,17 +147,32 @@ async function spotifyFetch(accessToken, path, params = {}) {
 }
 
 async function fetchArtistAlbums(accessToken, artistId) {
+  const cached = artistAlbumCache.get(artistId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.albums;
+  }
+
   const albums = [];
   const seenAlbumKeys = new Set();
   let offset = 0;
   let total = Number.POSITIVE_INFINITY;
+  let pagesLoaded = 0;
 
-  while (offset < total && albums.length < 200) {
-    const data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
-      include_groups: 'album,single',
-      market: 'GB',
-      offset: String(offset),
-    });
+  while (offset < total && albums.length < MAX_ARTIST_ALBUMS && pagesLoaded < MAX_ARTIST_ALBUM_PAGES) {
+    let data;
+    try {
+      data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
+        include_groups: 'album,single',
+        market: 'GB',
+        offset: String(offset),
+      });
+    } catch (error) {
+      if (isSpotifyRateLimitError(error)) {
+        break;
+      }
+
+      throw error;
+    }
 
     const items = data.items ?? [];
     for (const album of items) {
@@ -164,7 +183,7 @@ async function fetchArtistAlbums(accessToken, artistId) {
 
       seenAlbumKeys.add(dedupeKey);
       albums.push(toAlbumPick(album));
-      if (albums.length >= 200) {
+      if (albums.length >= MAX_ARTIST_ALBUMS) {
         break;
       }
     }
@@ -176,7 +195,13 @@ async function fetchArtistAlbums(accessToken, artistId) {
     }
 
     offset += pageSize;
+    pagesLoaded += 1;
   }
+
+  artistAlbumCache.set(artistId, {
+    albums,
+    expiresAt: Date.now() + ARTIST_ALBUM_CACHE_MS,
+  });
 
   return albums;
 }
@@ -227,6 +252,13 @@ function normalizeAlbumName(name) {
     .replace(/\s*[-(]\s*(deluxe|expanded|remaster(?:ed)?|anniversary|collector'?s|special|explicit|clean|version|edition|mix).*$/i, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
+}
+
+function isSpotifyRateLimitError(error) {
+  return error instanceof Error && (
+    error.message.includes('429') ||
+    error.message.toLowerCase().includes('too many requests')
+  );
 }
 
 function sendJson(response, status, body) {

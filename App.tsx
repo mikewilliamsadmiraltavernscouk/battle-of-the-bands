@@ -87,13 +87,10 @@ export default function App() {
       setSearching(true);
       setSearchError(null);
       try {
-        const [artists, albums] = await Promise.all([
-          spotifySearchService.searchArtists(query),
-          spotifySearchService.search(query),
-        ]);
+        const artists = await spotifySearchService.searchArtists(query);
         if (!cancelled) {
           setArtistResults(artists);
-          setSearchResults(albums);
+          setSearchResults([]);
         }
       } catch (error) {
         if (!cancelled) {
@@ -815,7 +812,11 @@ function RoomScreen({
           ) : null}
 
           {selectedArtist ? (
-            artistAlbums.map((album) => {
+            artistAlbums.length === 0 && !searching ? (
+              <Text style={styles.statusText}>
+                No albums loaded yet. Spotify may be cooling down after too many requests; try Back to artists and select this artist again in a moment.
+              </Text>
+            ) : artistAlbums.map((album) => {
               const isAdded = sharedList.some((item) => item.id === album.id);
               const tracks = albumTracks[album.albumId] ?? [];
               const isExpanded = expandedAlbumId === album.albumId;
