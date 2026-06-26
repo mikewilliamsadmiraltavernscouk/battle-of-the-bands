@@ -1,0 +1,39 @@
+{
+  "name": "i-want-to-build-an-app",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "expo": "~54.0.0",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.5"
+  },
+  "devDependencies": {
+    "@expo/ngrok": "^4.1.3",
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+  },
+  "scripts": {
+    "start": "expo start",
+    "iphone": "expo start --lan",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "spotify:search": "node backend/spotify/search-server.js",
+    "setup:check": "node scripts/check-setup.js",
+    "setup:live": "node scripts/check-live-backend.js",
+    "setup:spotify": "node scripts/check-spotify-search.js",
+    "check:platform": "node scripts/check-platform-compat.js",
+    "check:build": "node scripts/check-build-config.js",
+    "check:release-docs": "node scripts/check-release-docs.js",
+    "smoke:local": "node scripts/smoke-local-room.js",
+    "smoke:random": "node scripts/smoke-random-match.js",
+    "smoke:playback": "node scripts/smoke-playback.js",
+    "smoke:spotify-search": "node scripts/smoke-spotify-search-service.js",
+    "smoke:invite": "node scripts/smoke-invite-links.js",
+    "smoke:share": "node scripts/smoke-share-message.js",
+    "smoke:supabase": "node scripts/smoke-supabase-schema.js",
+    "verify": "npm run check:platform && npm run check:build && npm run check:release-docs && npm run smoke:local && npm run smoke:random && npm run smoke:playback && npm run smoke:spotify-search && npm run smoke:invite && npm run smoke:share && npm run smoke:supabase && npx tsc --noEmit && node --check backend/spotify/search-server.js"
+  },
+  "private": true
+}

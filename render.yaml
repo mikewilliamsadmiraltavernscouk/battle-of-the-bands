@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: battle-bands-spotify
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node backend/spotify/search-server.js
+    envVars:
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: PORT
+        value: 10000
