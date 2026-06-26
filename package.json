@@ -33,8 +33,9 @@
     "smoke:spotify-search": "node scripts/smoke-spotify-search-service.js",
     "smoke:invite": "node scripts/smoke-invite-links.js",
     "smoke:share": "node scripts/smoke-share-message.js",
+    "smoke:sessions": "node scripts/smoke-room-sessions.js",
     "smoke:supabase": "node scripts/smoke-supabase-schema.js",
-    "verify": "npm run check:platform && npm run check:build && npm run check:release-docs && npm run smoke:local && npm run smoke:random && npm run smoke:playback && npm run smoke:spotify-search && npm run smoke:invite && npm run smoke:share && npm run smoke:supabase && npx tsc --noEmit && node --check backend/spotify/search-server.js"
+    "verify": "npm run check:platform && npm run check:build && npm run check:release-docs && npm run smoke:local && npm run smoke:random && npm run smoke:playback && npm run smoke:spotify-search && npm run smoke:invite && npm run smoke:share && npm run smoke:sessions && npm run smoke:supabase && npx tsc --noEmit && node --check backend/spotify/search-server.js"
   },
   "private": true
 }
