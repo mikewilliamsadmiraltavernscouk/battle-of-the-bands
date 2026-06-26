@@ -1,7 +1,7 @@
 import { searchSpotifyMock } from './mockSpotify';
 import type { MusicPick, SpotifyAlbum, SpotifyArtist, SpotifyTrack } from './types';
 
-const SEARCH_TIMEOUT_MS = 8000;
+const SEARCH_TIMEOUT_MS = 20000;
 
 export type SpotifySearchService = {
   search: (query: string) => Promise<MusicPick[]>;

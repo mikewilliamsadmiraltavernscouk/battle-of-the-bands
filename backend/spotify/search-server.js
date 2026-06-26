@@ -138,7 +138,10 @@ async function spotifyFetch(accessToken, path, params = {}) {
 
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(`Spotify request failed: ${response.status} ${message}`);
+    const error = new Error(`Spotify request failed: ${response.status} ${message}`);
+    error.status = response.status;
+    error.retryAfterMs = Number(response.headers.get('retry-after') ?? 1) * 1000;
+    throw error;
   }
 
   return response.json();
@@ -157,7 +160,7 @@ async function fetchArtistAlbums(accessToken, artistId) {
 
   try {
     while (offset < total && albums.length < 200) {
-      const data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
+      const data = await spotifyFetchWithRetry(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
         include_groups: 'album,single',
         market: 'GB',
         offset: String(offset),
@@ -184,6 +187,7 @@ async function fetchArtistAlbums(accessToken, artistId) {
       }
 
       offset += pageSize;
+      await delay(300);
     }
   } catch (error) {
     if (cached?.albums?.length) {
@@ -207,6 +211,29 @@ async function fetchArtistAlbums(accessToken, artistId) {
   });
 
   return albums;
+}
+
+async function spotifyFetchWithRetry(accessToken, path, params = {}) {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await spotifyFetch(accessToken, path, params);
+    } catch (error) {
+      const isRateLimited = error instanceof Error && error.status === 429;
+      if (!isRateLimited || attempt === maxAttempts) {
+        throw error;
+      }
+
+      await delay(Math.min(Math.max(error.retryAfterMs ?? 1000, 1000), 5000));
+    }
+  }
+
+  throw new Error('Spotify request failed after retries.');
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function toMusicPick(album) {
