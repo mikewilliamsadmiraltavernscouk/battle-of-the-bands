@@ -50,6 +50,7 @@ const roomRepository = createRoomRepository();
 const roomRepositoryMode = getRoomRepositoryMode();
 const spotifySearchService = createSpotifySearchService();
 const spotifySearchMode = getSpotifySearchMode();
+const SPOTIFY_SEARCH_DEBOUNCE_MS = 500;
 const SHARED_LIST_PREVIEW_LIMIT = 25;
 const BATTLE_HISTORY_PREVIEW_LIMIT = 5;
 const WINNER_HISTORY_PREVIEW_LIMIT = 25;
@@ -68,6 +69,7 @@ export default function App() {
   const [albumTracks, setAlbumTracks] = useState<Record<string, SpotifyTrack[]>>({});
   const [expandedAlbumId, setExpandedAlbumId] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchNotice, setSearchNotice] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<MusicPick | null>(null);
 
@@ -82,18 +84,26 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const trimmedQuery = query.trim();
 
     async function search() {
+      if (trimmedQuery.length < 2) {
+        setArtistResults([]);
+        setSearchResults([]);
+        setSearchError(null);
+        setSearchNotice(null);
+        setSearching(false);
+        return;
+      }
+
       setSearching(true);
       setSearchError(null);
+      setSearchNotice(null);
       try {
-        const [artists, albums] = await Promise.all([
-          spotifySearchService.searchArtists(query),
-          spotifySearchService.search(query),
-        ]);
+        const artists = await spotifySearchService.searchArtists(trimmedQuery);
         if (!cancelled) {
           setArtistResults(artists);
-          setSearchResults(albums);
+          setSearchResults([]);
         }
       } catch (error) {
         if (!cancelled) {
@@ -108,10 +118,11 @@ export default function App() {
       }
     }
 
-    search();
+    const timeout = setTimeout(search, SPOTIFY_SEARCH_DEBOUNCE_MS);
 
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
     };
   }, [query]);
 
@@ -122,12 +133,26 @@ export default function App() {
     setExpandedAlbumId(null);
     setSearching(true);
     setSearchError(null);
+    setSearchNotice(null);
 
     try {
       const albums = await spotifySearchService.getArtistAlbums(artist);
       setArtistAlbums(albums);
     } catch (error) {
-      setSearchError(error instanceof Error ? error.message : 'Spotify albums could not be loaded.');
+      try {
+        const fallbackAlbums = await spotifySearchService.search(artist.name);
+        const exactArtistAlbums = fallbackAlbums
+          .filter((album) => musicPickMatchesArtist(album, artist.name))
+          .map(toSpotifyAlbum);
+        setArtistAlbums(exactArtistAlbums);
+        if (exactArtistAlbums.length) {
+          setSearchNotice('Showing top matching albums while Spotify limits the full album list.');
+        } else {
+          setSearchError(error instanceof Error ? error.message : 'Spotify albums could not be loaded.');
+        }
+      } catch (fallbackError) {
+        setSearchError(fallbackError instanceof Error ? fallbackError.message : 'Spotify albums could not be loaded.');
+      }
     } finally {
       setSearching(false);
     }
@@ -146,6 +171,7 @@ export default function App() {
 
     setSearching(true);
     setSearchError(null);
+    setSearchNotice(null);
     try {
       const tracks = await spotifySearchService.getAlbumTracks(album.albumId);
       setAlbumTracks((current) => ({ ...current, [album.albumId]: tracks }));
@@ -161,6 +187,7 @@ export default function App() {
     setArtistAlbums([]);
     setAlbumTracks({});
     setExpandedAlbumId(null);
+    setSearchNotice(null);
   }
 
   function changeSpotifyQuery(nextQuery: string) {
@@ -169,6 +196,7 @@ export default function App() {
     setArtistAlbums([]);
     setAlbumTracks({});
     setExpandedAlbumId(null);
+    setSearchNotice(null);
   }
 
   useEffect(() => {
@@ -318,6 +346,7 @@ export default function App() {
     setNowPlaying(null);
     setQuery('');
     setSearchError(null);
+    setSearchNotice(null);
     setSearchResults([]);
     setScreen('home');
   }
@@ -406,6 +435,7 @@ export default function App() {
             artistResults={artistResults}
             expandedAlbumId={expandedAlbumId}
             searchError={searchError}
+            searchNotice={searchNotice}
             searchResults={searchResults}
             searchMode={spotifySearchMode}
             searching={searching}
@@ -674,6 +704,7 @@ function RoomScreen({
   members,
   query,
   searchError,
+  searchNotice,
   searchResults,
   searchMode,
   searching,
@@ -700,6 +731,7 @@ function RoomScreen({
   members: RoomMember[];
   query: string;
   searchError: string | null;
+  searchNotice: string | null;
   searchResults: MusicPick[];
   searchMode: string;
   searching: boolean;
@@ -783,6 +815,7 @@ function RoomScreen({
           style={styles.input}
         />
         {searching ? <Text style={styles.statusText}>Searching Spotify...</Text> : null}
+        {searchNotice ? <Text style={styles.statusText}>{searchNotice}</Text> : null}
         {searchError ? <Text style={styles.errorText}>{searchError}</Text> : null}
         <View style={styles.resultList}>
           {selectedArtist ? (
@@ -1392,6 +1425,25 @@ function BattleCard({
       </View>
     </View>
   );
+}
+
+function musicPickMatchesArtist(pick: MusicPick, artistName: string) {
+  const normalizedArtist = normalizeArtistName(artistName);
+  return pick.artist
+    .split(',')
+    .map((artist) => normalizeArtistName(artist))
+    .some((artist) => artist === normalizedArtist);
+}
+
+function normalizeArtistName(name: string) {
+  return name.toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function toSpotifyAlbum(pick: MusicPick): SpotifyAlbum {
+  return {
+    ...pick,
+    albumId: pick.spotifyUrl.split(':').at(-1) ?? pick.id,
+  };
 }
 
 function AlbumArtwork({ pick, size }: { pick: MusicPick; size: 'small' | 'large' }) {
