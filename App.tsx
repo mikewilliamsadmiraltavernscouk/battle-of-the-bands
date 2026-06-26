@@ -1,7 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  Animated,
   Image,
   Linking,
   Pressable,
@@ -45,6 +46,14 @@ import type {
 import { openSpotifyPick } from './src/spotifyPlayback';
 import { createInviteLink, parseInviteCode } from './src/inviteLinks';
 import { createRoomInviteShareMessage, createWinnerShareMessage } from './src/shareMessages';
+import {
+  clearLastRoomSession,
+  forgetSavedRoomSession,
+  loadLastRoomSession,
+  loadSavedRoomSessions,
+  saveLastRoomSession,
+} from './src/roomSessionStore';
+import type { SavedRoomSession } from './src/roomSessionStore';
 
 const roomRepository = createRoomRepository();
 const roomRepositoryMode = getRoomRepositoryMode();
@@ -54,12 +63,23 @@ const SPOTIFY_SEARCH_DEBOUNCE_MS = 500;
 const SHARED_LIST_PREVIEW_LIMIT = 25;
 const BATTLE_HISTORY_PREVIEW_LIMIT = 5;
 const WINNER_HISTORY_PREVIEW_LIMIT = 25;
+const BACKGROUND_ARTISTS = [
+  'Queen',
+  'Oasis',
+  'Fleetwood Mac',
+  'Nirvana',
+  'The Beatles',
+  'Arctic Monkeys',
+  'ABBA',
+  'David Bowie',
+];
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('home');
   const [room, setRoom] = useState<BattleRoom>(() => createDemoRoom());
   const [joinCode, setJoinCode] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [roomLabel, setRoomLabel] = useState('');
   const [selectedMemberId, setSelectedMemberId] = useState(room.members[0].id);
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<MusicPick[]>([]);
@@ -72,6 +92,9 @@ export default function App() {
   const [searchNotice, setSearchNotice] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<MusicPick | null>(null);
+  const [restoringRoom, setRestoringRoom] = useState(roomRepositoryMode === 'supabase');
+  const [savedRooms, setSavedRooms] = useState<SavedRoomSession[]>([]);
+  const [savedRoomWinners, setSavedRoomWinners] = useState<Record<string, MusicPick | null>>({});
 
   const selectedMember = room.members.find((member) => member.id === selectedMemberId) ?? room.members[0];
   const isCurrentUserHost = Boolean(selectedMember?.isHost);
@@ -82,6 +105,53 @@ export default function App() {
   const majorityNeeded = getMajorityNeeded(room);
   const voteCounts = getVoteCounts(room);
   const matchIsTied = isMatchTied(room);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function restoreRoomSession() {
+      if (roomRepositoryMode !== 'supabase') {
+        setRestoringRoom(false);
+        return;
+      }
+
+      try {
+        const session = await loadLastRoomSession();
+        const sessions = await loadSavedRoomSessions();
+        if (!cancelled) {
+          setSavedRooms(sessions);
+          refreshSavedRoomWinners(sessions).catch(() => undefined);
+        }
+
+        if (!session || cancelled) {
+          return;
+        }
+
+        const nextRoom = await roomRepository.joinRoom(session.roomCode, session.memberName);
+        if (cancelled) {
+          return;
+        }
+
+        setRoom(nextRoom);
+        setDisplayName(session.memberName);
+        setRoomLabel(session.roomLabel ?? '');
+        setSelectedMemberId(findMemberId(nextRoom, session.memberName));
+        setScreen(nextRoom.champion ? 'winner' : session.screen);
+      } catch {
+        await clearLastRoomSession();
+      } finally {
+        if (!cancelled) {
+          setRestoringRoom(false);
+        }
+      }
+    }
+
+    restoreRoomSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -273,6 +343,12 @@ export default function App() {
       setRoom(nextRoom);
       setSelectedMemberId(nextRoom.members[0].id);
       setScreen('room');
+      await rememberRoomSession({
+        roomCode: nextRoom.code,
+        memberName,
+        screen: 'room',
+        roomLabel: roomLabel.trim() || undefined,
+      });
     }, 'Create room failed');
   }
 
@@ -291,9 +367,14 @@ export default function App() {
     await runRoomAction(async () => {
       const nextRoom = await roomRepository.joinRoom(normalizedCode, memberName);
       setRoom(nextRoom);
-      const joinedMember = nextRoom.members.find((member) => member.name === memberName);
-      setSelectedMemberId(joinedMember?.id ?? nextRoom.members[0].id);
+      setSelectedMemberId(findMemberId(nextRoom, memberName));
       setScreen('room');
+      await rememberRoomSession({
+        roomCode: nextRoom.code,
+        memberName,
+        screen: 'room',
+        roomLabel: roomLabel.trim() || undefined,
+      });
     }, 'Join room failed');
   }
 
@@ -313,7 +394,69 @@ export default function App() {
     await runRoomAction(async () => {
       setRoom(await roomRepository.startBattle(room, selectedMemberId));
       setScreen('battle');
+      await rememberRoomSession({
+        roomCode: room.code,
+        memberName: selectedMember.name,
+        screen: 'battle',
+        roomLabel: roomLabel.trim() || undefined,
+      });
     }, 'Start battle failed');
+  }
+
+  async function rememberRoomSession(session: Omit<SavedRoomSession, 'lastOpenedAt'>) {
+    await saveLastRoomSession(session);
+    const sessions = await loadSavedRoomSessions();
+    setSavedRooms(sessions);
+    await refreshSavedRoomWinners(sessions);
+  }
+
+  async function openSavedRoom(session: SavedRoomSession) {
+    await runRoomAction(async () => {
+      const nextRoom = await roomRepository.joinRoom(session.roomCode, session.memberName);
+      setRoom(nextRoom);
+      setDisplayName(session.memberName);
+      setRoomLabel(session.roomLabel ?? '');
+      setSelectedMemberId(findMemberId(nextRoom, session.memberName));
+      setScreen(nextRoom.champion ? 'winner' : session.screen);
+      await rememberRoomSession({
+        roomCode: nextRoom.code,
+        memberName: session.memberName,
+        screen: nextRoom.champion ? 'winner' : session.screen,
+        roomLabel: session.roomLabel,
+      });
+    }, 'Open room failed');
+  }
+
+  async function forgetSavedRoom(roomCode: string) {
+    await forgetSavedRoomSession(roomCode);
+    const sessions = await loadSavedRoomSessions();
+    setSavedRooms(sessions);
+    setSavedRoomWinners((current) => {
+      const nextWinners = { ...current };
+      delete nextWinners[roomCode];
+      return nextWinners;
+    });
+    await refreshSavedRoomWinners(sessions);
+  }
+
+  async function refreshSavedRoomWinners(sessions: SavedRoomSession[]) {
+    if (roomRepositoryMode !== 'supabase' || sessions.length === 0) {
+      setSavedRoomWinners({});
+      return;
+    }
+
+    const winnerEntries = await Promise.all(
+      sessions.map(async (session) => {
+        try {
+          const savedRoom = await roomRepository.joinRoom(session.roomCode, session.memberName);
+          return [session.roomCode, savedRoom.champion] as const;
+        } catch {
+          return [session.roomCode, null] as const;
+        }
+      }),
+    );
+
+    setSavedRoomWinners(Object.fromEntries(winnerEntries));
   }
 
   async function castVote(memberId: string, pick: MusicPick) {
@@ -349,7 +492,9 @@ export default function App() {
     setSearchError(null);
     setSearchNotice(null);
     setSearchResults([]);
+    setRoomLabel('');
     setScreen('home');
+    clearLastRoomSession().catch(() => undefined);
   }
 
   async function shareRoom() {
@@ -395,23 +540,32 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
+      <FadingArtistBackground />
       <ScrollView contentContainerStyle={styles.container}>
         {screen === 'home' ? (
           <HomeScreen
             displayName={displayName}
             joinCode={joinCode}
+            roomLabel={roomLabel}
             roomMode={roomRepositoryMode}
             searchMode={spotifySearchMode}
+            restoringRoom={restoringRoom}
+            savedRooms={savedRooms}
+            savedRoomWinners={savedRoomWinners}
             setDisplayName={setDisplayName}
             setJoinCode={setJoinCode}
+            setRoomLabel={setRoomLabel}
             onCreateRoom={createRoom}
+            onForgetSavedRoom={forgetSavedRoom}
             onJoinRoom={joinRoom}
+            onOpenSavedRoom={openSavedRoom}
           />
         ) : null}
 
         {screen !== 'home' ? (
           <RoomHeader
             roomCode={room.code}
+            roomLabel={roomLabel}
             screen={screen}
             members={room.members}
             mode={roomRepositoryMode}
@@ -503,21 +657,35 @@ export default function App() {
 function HomeScreen({
   displayName,
   joinCode,
+  roomLabel,
   roomMode,
   searchMode,
+  restoringRoom,
+  savedRooms,
+  savedRoomWinners,
   setDisplayName,
   setJoinCode,
+  setRoomLabel,
   onCreateRoom,
+  onForgetSavedRoom,
   onJoinRoom,
+  onOpenSavedRoom,
 }: {
   displayName: string;
   joinCode: string;
+  roomLabel: string;
   roomMode: string;
   searchMode: string;
+  restoringRoom: boolean;
+  savedRooms: SavedRoomSession[];
+  savedRoomWinners: Record<string, MusicPick | null>;
   setDisplayName: (value: string) => void;
   setJoinCode: (value: string) => void;
+  setRoomLabel: (value: string) => void;
   onCreateRoom: () => void;
+  onForgetSavedRoom: (roomCode: string) => void;
   onJoinRoom: () => void;
+  onOpenSavedRoom: (session: SavedRoomSession) => void;
 }) {
   const nextSetupStep =
     roomMode !== 'supabase'
@@ -571,6 +739,7 @@ function HomeScreen({
 
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>Your name</Text>
+        {restoringRoom ? <Text style={styles.statusText}>Reopening your last room...</Text> : null}
         <TextInput
           value={displayName}
           onChangeText={setDisplayName}
@@ -580,6 +749,51 @@ function HomeScreen({
           style={styles.input}
         />
       </View>
+
+      <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Room label</Text>
+        <Text style={styles.panelMeta}>Optional text to help tell saved rooms apart.</Text>
+        <TextInput
+          value={roomLabel}
+          onChangeText={setRoomLabel}
+          autoCapitalize="sentences"
+          placeholder="e.g. Friday night, Test room, Pub final"
+          placeholderTextColor={colors.subtle}
+          style={styles.input}
+        />
+      </View>
+
+      {savedRooms.length > 0 ? (
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Your rooms</Text>
+          <Text style={styles.panelMeta}>Browse rooms you have created or joined on this phone.</Text>
+          <View style={styles.savedRoomList}>
+            {savedRooms.map((savedRoom) => (
+              <View key={savedRoom.roomCode} style={styles.savedRoomRow}>
+                <View style={styles.savedRoomText}>
+                  <Text style={styles.artist}>{savedRoom.roomLabel ?? savedRoom.roomCode}</Text>
+                  <Text style={styles.album}>
+                    {savedRoom.roomCode} - {savedRoom.memberName} - last opened {formatSavedRoomDate(savedRoom.lastOpenedAt)}
+                  </Text>
+                  {savedRoomWinners[savedRoom.roomCode] ? (
+                    <Text style={styles.savedRoomWinner}>
+                      Winner: {savedRoomWinners[savedRoom.roomCode]?.artist} - {savedRoomWinners[savedRoom.roomCode]?.album}
+                    </Text>
+                  ) : null}
+                </View>
+                <View style={styles.savedRoomActions}>
+                  <Pressable onPress={() => onOpenSavedRoom(savedRoom)} style={styles.smallActionButton}>
+                    <Text style={styles.smallActionText}>Open</Text>
+                  </Pressable>
+                  <Pressable onPress={() => onForgetSavedRoom(savedRoom.roomCode)} style={styles.smallGhostButton}>
+                    <Text style={styles.removeText}>Forget</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
 
       <View style={styles.panel}>
         <Text style={styles.panelTitle}>Start a room</Text>
@@ -608,6 +822,7 @@ function HomeScreen({
 
 function RoomHeader({
   roomCode,
+  roomLabel,
   screen,
   members,
   mode,
@@ -620,6 +835,7 @@ function RoomHeader({
   onShare,
 }: {
   roomCode: string;
+  roomLabel: string;
   screen: Screen;
   members: RoomMember[];
   mode: string;
@@ -636,20 +852,20 @@ function RoomHeader({
       <View style={styles.headerTop}>
         <View>
           <Text style={styles.eyebrow}>Room {roomCode}</Text>
-          <Text style={styles.headerTitle}>Shared battle list</Text>
+          <Text style={styles.headerTitle}>{roomLabel.trim() || 'Shared battle list'}</Text>
           <Text style={styles.panelMeta}>
             {picksCount} Spotify picks - {mode} room
           </Text>
         </View>
         <View style={styles.headerActions}>
-          <Pressable onPress={onShare}>
+          <Pressable onPress={onShare} style={styles.headerActionButton}>
             <Text style={styles.shareText}>Share</Text>
           </Pressable>
-          <Pressable onPress={onRefresh}>
+          <Pressable onPress={onRefresh} style={styles.headerActionButton}>
             <Text style={styles.refreshText}>Refresh</Text>
           </Pressable>
-          <Pressable onPress={onLeave}>
-            <Text style={styles.removeText}>Leave</Text>
+          <Pressable onPress={onLeave} style={styles.headerActionButton}>
+            <Text style={styles.homeText}>Home</Text>
           </Pressable>
         </View>
       </View>
@@ -862,7 +1078,7 @@ function RoomScreen({
                 No albums found for this artist. Try Back to artists and search a more specific name.
               </Text>
             ) : artistAlbums.map((album) => {
-              const isAdded = sharedList.some((item) => item.id === album.id);
+              const isAdded = sharedListHasPick(sharedList, album);
               const tracks = albumTracks[album.albumId] ?? [];
               const isExpanded = expandedAlbumId === album.albumId;
 
@@ -878,7 +1094,7 @@ function RoomScreen({
                       <Text style={styles.artist}>{album.artist}</Text>
                       <Text style={styles.album}>{album.album}</Text>
                     </View>
-                    <Text style={styles.addLabel}>
+                    <Text style={[styles.addLabel, isAdded && styles.addedLabel]}>
                       {isAdded ? 'Added' : addingClosed ? 'Complete' : roomIsFull ? 'Full' : 'Add album'}
                     </Text>
                   </Pressable>
@@ -893,7 +1109,7 @@ function RoomScreen({
                         <Text style={styles.statusText}>Loading songs...</Text>
                       ) : null}
                       {tracks.map((track) => {
-                        const trackIsAdded = sharedList.some((item) => item.id === track.id);
+                        const trackIsAdded = sharedListHasPick(sharedList, track);
 
                         return (
                           <Pressable
@@ -907,7 +1123,7 @@ function RoomScreen({
                               <Text style={styles.artist}>{track.album}</Text>
                               <Text style={styles.album}>{track.artist}</Text>
                             </View>
-                            <Text style={styles.addLabel}>
+                            <Text style={[styles.addLabel, trackIsAdded && styles.addedLabel]}>
                               {trackIsAdded ? 'Added' : addingClosed ? 'Complete' : roomIsFull ? 'Full' : 'Add song'}
                             </Text>
                           </Pressable>
@@ -922,7 +1138,7 @@ function RoomScreen({
             <View>
               {searchResults.length > 0 ? <Text style={styles.resultSectionTitle}>Albums</Text> : null}
               {searchResults.map((pick) => {
-                const isAdded = sharedList.some((item) => item.id === pick.id);
+                const isAdded = sharedListHasPick(sharedList, pick);
 
                 return (
                   <Pressable
@@ -936,7 +1152,7 @@ function RoomScreen({
                       <Text style={styles.artist}>{pick.artist}</Text>
                       <Text style={styles.album}>{pick.album}</Text>
                     </View>
-                    <Text style={styles.addLabel}>
+                    <Text style={[styles.addLabel, isAdded && styles.addedLabel]}>
                       {isAdded ? 'Added' : addingClosed ? 'Complete' : roomIsFull ? 'Full' : 'Add'}
                     </Text>
                   </Pressable>
@@ -1444,8 +1660,29 @@ function musicPickMatchesArtist(pick: MusicPick, artistName: string) {
     .some((artist) => artist === normalizedArtist);
 }
 
+function sharedListHasPick(sharedList: MusicPick[], pick: MusicPick) {
+  return sharedList.some((item) => item.id === pick.id || item.spotifyUrl === pick.spotifyUrl);
+}
+
 function normalizeArtistName(name: string) {
   return name.toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function findMemberId(room: BattleRoom, memberName: string) {
+  const normalizedName = memberName.trim().toLowerCase();
+  return room.members.find((member) => member.name.trim().toLowerCase() === normalizedName)?.id ?? room.members[0].id;
+}
+
+function formatSavedRoomDate(value: string) {
+  const openedAt = new Date(value);
+  if (Number.isNaN(openedAt.getTime())) {
+    return 'recently';
+  }
+
+  return openedAt.toLocaleDateString(undefined, {
+    day: '2-digit',
+    month: 'short',
+  });
 }
 
 function toSpotifyAlbum(pick: MusicPick): SpotifyAlbum {
@@ -1488,6 +1725,55 @@ function SpotifyImage({
   );
 }
 
+function FadingArtistBackground() {
+  const fade = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(fade, {
+          toValue: 1,
+          duration: 12000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(fade, {
+          toValue: 0,
+          duration: 12000,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    animation.start();
+    return () => animation.stop();
+  }, [fade]);
+
+  return (
+    <View pointerEvents="none" style={styles.artistBackground}>
+      {BACKGROUND_ARTISTS.map((artist, index) => {
+        const stagger = index / BACKGROUND_ARTISTS.length;
+        const opacity = fade.interpolate({
+          inputRange: [0, Math.max(stagger - 0.18, 0), stagger, Math.min(stagger + 0.28, 1), 1],
+          outputRange: [0.03, 0.03, 0.16, 0.04, 0.03],
+        });
+
+        return (
+          <Animated.Text
+            key={artist}
+            style={[
+              styles.backgroundArtistName,
+              styles[`backgroundArtist${index}` as keyof typeof styles],
+              { opacity },
+            ]}
+          >
+            {artist}
+          </Animated.Text>
+        );
+      })}
+    </View>
+  );
+}
+
 const colors = {
   background: '#08090f',
   surface: '#11131d',
@@ -1517,7 +1803,59 @@ const styles = StyleSheet.create({
   container: {
     flexGrow: 1,
     padding: 20,
-    backgroundColor: colors.background,
+    backgroundColor: 'transparent',
+  },
+  artistBackground: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+  backgroundArtistName: {
+    position: 'absolute',
+    color: colors.accent,
+    fontSize: 34,
+    fontWeight: '900',
+    letterSpacing: 0,
+    textTransform: 'uppercase',
+  },
+  backgroundArtist0: {
+    top: 72,
+    left: -24,
+    transform: [{ rotate: '-12deg' }],
+  },
+  backgroundArtist1: {
+    top: 180,
+    right: -16,
+    transform: [{ rotate: '10deg' }],
+  },
+  backgroundArtist2: {
+    top: 320,
+    left: 34,
+    transform: [{ rotate: '-7deg' }],
+  },
+  backgroundArtist3: {
+    top: 500,
+    right: 22,
+    transform: [{ rotate: '8deg' }],
+  },
+  backgroundArtist4: {
+    top: 680,
+    left: -18,
+    transform: [{ rotate: '11deg' }],
+  },
+  backgroundArtist5: {
+    top: 850,
+    right: -34,
+    transform: [{ rotate: '-9deg' }],
+  },
+  backgroundArtist6: {
+    top: 1040,
+    left: 42,
+    transform: [{ rotate: '7deg' }],
+  },
+  backgroundArtist7: {
+    top: 1220,
+    right: 18,
+    transform: [{ rotate: '-11deg' }],
   },
   hero: {
     gap: 12,
@@ -1537,7 +1875,18 @@ const styles = StyleSheet.create({
   },
   headerActions: {
     alignItems: 'flex-end',
-    gap: 10,
+    gap: 8,
+  },
+  headerActionButton: {
+    minWidth: 96,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceRaised,
+    paddingHorizontal: 14,
   },
   headerTitle: {
     color: colors.text,
@@ -1727,6 +2076,53 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     lineHeight: 19,
+  },
+  savedRoomList: {
+    gap: 10,
+  },
+  savedRoomRow: {
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: 12,
+  },
+  savedRoomText: {
+    gap: 2,
+  },
+  savedRoomWinner: {
+    marginTop: 4,
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: '900',
+    lineHeight: 18,
+  },
+  savedRoomActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  smallActionButton: {
+    minHeight: 38,
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: colors.accent,
+    paddingHorizontal: 12,
+  },
+  smallActionText: {
+    color: colors.buttonText,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  smallGhostButton: {
+    minHeight: 38,
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    paddingHorizontal: 12,
   },
   statusGrid: {
     flexDirection: 'row',
@@ -1942,6 +2338,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '900',
   },
+  addedLabel: {
+    color: colors.danger,
+  },
   primaryButton: {
     minHeight: 44,
     alignItems: 'center',
@@ -1974,14 +2373,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
   },
+  homeText: {
+    color: colors.accent,
+    fontSize: 15,
+    fontWeight: '900',
+  },
   refreshText: {
     color: colors.accent,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '900',
   },
   shareText: {
     color: colors.accent,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '900',
   },
   lockedText: {
