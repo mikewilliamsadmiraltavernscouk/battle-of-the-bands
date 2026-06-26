@@ -21,14 +21,8 @@ const server = http.createServer(async (request, response) => {
   }
 
   const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
-  if (request.method !== 'GET' || url.pathname !== '/spotify/search') {
+  if (request.method !== 'GET') {
     sendJson(response, 404, { error: 'Not found' });
-    return;
-  }
-
-  const query = url.searchParams.get('q')?.trim() ?? '';
-  if (!query) {
-    sendJson(response, 200, { results: [] });
     return;
   }
 
@@ -41,28 +35,62 @@ const server = http.createServer(async (request, response) => {
 
   try {
     const accessToken = await getAccessToken();
-    const spotifyResponse = await fetch(
-      `https://api.spotify.com/v1/search?${new URLSearchParams({
+
+    if (url.pathname === '/spotify/search') {
+      const query = url.searchParams.get('q')?.trim() ?? '';
+      if (!query) {
+        sendJson(response, 200, { results: [] });
+        return;
+      }
+
+      const data = await spotifyFetch(accessToken, '/v1/search', {
         q: query,
         type: 'album',
         limit: '10',
-      })}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      },
-    );
-
-    if (!spotifyResponse.ok) {
-      const message = await spotifyResponse.text();
-      sendJson(response, spotifyResponse.status, { error: message });
+      });
+      sendJson(response, 200, { results: (data.albums?.items ?? []).map(toMusicPick) });
       return;
     }
 
-    const data = await spotifyResponse.json();
-    const results = (data.albums?.items ?? []).map(toMusicPick);
-    sendJson(response, 200, { results });
+    if (url.pathname === '/spotify/artists') {
+      const query = url.searchParams.get('q')?.trim() ?? '';
+      if (!query) {
+        sendJson(response, 200, { artists: [] });
+        return;
+      }
+
+      const data = await spotifyFetch(accessToken, '/v1/search', {
+        q: query,
+        type: 'artist',
+        limit: '10',
+      });
+      sendJson(response, 200, { artists: (data.artists?.items ?? []).map(toArtist) });
+      return;
+    }
+
+    const artistAlbumsMatch = url.pathname.match(/^\/spotify\/artists\/([^/]+)\/albums$/);
+    if (artistAlbumsMatch) {
+      const artistId = decodeURIComponent(artistAlbumsMatch[1]);
+      const data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
+        include_groups: 'album,single',
+        market: 'GB',
+        limit: '30',
+      });
+      sendJson(response, 200, { albums: (data.items ?? []).map(toAlbumPick) });
+      return;
+    }
+
+    const albumTracksMatch = url.pathname.match(/^\/spotify\/albums\/([^/]+)\/tracks$/);
+    if (albumTracksMatch) {
+      const albumId = decodeURIComponent(albumTracksMatch[1]);
+      const album = await spotifyFetch(accessToken, `/v1/albums/${encodeURIComponent(albumId)}`, {
+        market: 'GB',
+      });
+      sendJson(response, 200, { tracks: (album.tracks?.items ?? []).map((track) => toTrackPick(track, album)) });
+      return;
+    }
+
+    sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
     sendJson(response, 500, {
       error: error instanceof Error ? error.message : 'Spotify search failed.',
@@ -101,6 +129,23 @@ async function getAccessToken() {
   return cachedToken;
 }
 
+async function spotifyFetch(accessToken, path, params = {}) {
+  const query = new URLSearchParams(params);
+  const url = `https://api.spotify.com${path}${query.size ? `?${query}` : ''}`;
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Spotify request failed: ${response.status} ${message}`);
+  }
+
+  return response.json();
+}
+
 function toMusicPick(album) {
   return {
     id: album.uri,
@@ -109,6 +154,35 @@ function toMusicPick(album) {
     addedBy: 'Spotify',
     spotifyUrl: album.uri,
     artworkUrl: album.images?.[0]?.url,
+  };
+}
+
+function toArtist(artist) {
+  return {
+    id: artist.id,
+    name: artist.name,
+    spotifyUrl: artist.uri,
+    artworkUrl: artist.images?.[0]?.url,
+  };
+}
+
+function toAlbumPick(album) {
+  return {
+    ...toMusicPick(album),
+    albumId: album.id,
+  };
+}
+
+function toTrackPick(track, album) {
+  return {
+    id: track.uri,
+    artist: track.artists?.map((artist) => artist.name).join(', ') ?? album.artists?.map((artist) => artist.name).join(', ') ?? 'Unknown artist',
+    album: `${track.name} (${album.name})`,
+    addedBy: 'Spotify',
+    spotifyUrl: track.uri,
+    artworkUrl: album.images?.[0]?.url,
+    albumId: album.id,
+    trackNumber: track.track_number ?? 0,
   };
 }
 

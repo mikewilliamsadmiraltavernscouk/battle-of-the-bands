@@ -9,6 +9,22 @@ export type MusicPick = {
   artworkUrl?: string;
 };
 
+export type SpotifyArtist = {
+  id: string;
+  name: string;
+  spotifyUrl: string;
+  artworkUrl?: string;
+};
+
+export type SpotifyAlbum = MusicPick & {
+  albumId: string;
+};
+
+export type SpotifyTrack = MusicPick & {
+  albumId: string;
+  trackNumber: number;
+};
+
 export type MatchVotes = Record<string, string>;
 
 export type RoomMember = {

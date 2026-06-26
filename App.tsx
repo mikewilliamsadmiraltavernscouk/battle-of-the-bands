@@ -38,6 +38,9 @@ import type {
   MusicPick,
   RoomMember,
   Screen,
+  SpotifyAlbum,
+  SpotifyArtist,
+  SpotifyTrack,
 } from './src/types';
 import { openSpotifyPick } from './src/spotifyPlayback';
 import { createInviteLink, parseInviteCode } from './src/inviteLinks';
@@ -59,6 +62,11 @@ export default function App() {
   const [selectedMemberId, setSelectedMemberId] = useState(room.members[0].id);
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<MusicPick[]>([]);
+  const [artistResults, setArtistResults] = useState<SpotifyArtist[]>([]);
+  const [selectedArtist, setSelectedArtist] = useState<SpotifyArtist | null>(null);
+  const [artistAlbums, setArtistAlbums] = useState<SpotifyAlbum[]>([]);
+  const [albumTracks, setAlbumTracks] = useState<Record<string, SpotifyTrack[]>>({});
+  const [expandedAlbumId, setExpandedAlbumId] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<MusicPick | null>(null);
@@ -79,12 +87,17 @@ export default function App() {
       setSearching(true);
       setSearchError(null);
       try {
-        const results = await spotifySearchService.search(query);
+        const [artists, albums] = await Promise.all([
+          spotifySearchService.searchArtists(query),
+          spotifySearchService.search(query),
+        ]);
         if (!cancelled) {
-          setSearchResults(results);
+          setArtistResults(artists);
+          setSearchResults(albums);
         }
       } catch (error) {
         if (!cancelled) {
+          setArtistResults([]);
           setSearchResults([]);
           setSearchError(error instanceof Error ? error.message : 'Spotify search failed.');
         }
@@ -101,6 +114,54 @@ export default function App() {
       cancelled = true;
     };
   }, [query]);
+
+  async function selectSpotifyArtist(artist: SpotifyArtist) {
+    setSelectedArtist(artist);
+    setArtistAlbums([]);
+    setAlbumTracks({});
+    setExpandedAlbumId(null);
+    setSearching(true);
+    setSearchError(null);
+
+    try {
+      const albums = await spotifySearchService.getArtistAlbums(artist.id);
+      setArtistAlbums(albums);
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : 'Spotify albums could not be loaded.');
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function toggleAlbumTracks(album: SpotifyAlbum) {
+    if (expandedAlbumId === album.albumId) {
+      setExpandedAlbumId(null);
+      return;
+    }
+
+    setExpandedAlbumId(album.albumId);
+    if (albumTracks[album.albumId]) {
+      return;
+    }
+
+    setSearching(true);
+    setSearchError(null);
+    try {
+      const tracks = await spotifySearchService.getAlbumTracks(album.albumId);
+      setAlbumTracks((current) => ({ ...current, [album.albumId]: tracks }));
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : 'Spotify songs could not be loaded.');
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function clearSpotifyArtist() {
+    setSelectedArtist(null);
+    setArtistAlbums([]);
+    setAlbumTracks({});
+    setExpandedAlbumId(null);
+  }
 
   useEffect(() => {
     if (screen === 'home' || roomRepositoryMode !== 'supabase') {
@@ -332,15 +393,23 @@ export default function App() {
             canStartBattle={roomCanStartBattle}
             members={room.members}
             query={query}
+            albumTracks={albumTracks}
+            artistAlbums={artistAlbums}
+            artistResults={artistResults}
+            expandedAlbumId={expandedAlbumId}
             searchError={searchError}
             searchResults={searchResults}
             searchMode={spotifySearchMode}
             searching={searching}
+            selectedArtist={selectedArtist}
             selectedMemberId={selectedMemberId}
             sharedList={room.picks}
             isCurrentUserHost={isCurrentUserHost}
             roomIsFull={roomIsFull}
             onAddPick={addPick}
+            onClearArtist={clearSpotifyArtist}
+            onSelectArtist={selectSpotifyArtist}
+            onToggleAlbumTracks={toggleAlbumTracks}
             onMemberChange={setSelectedMemberId}
             onQueryChange={setQuery}
             onRemovePick={removePick}
@@ -590,17 +659,25 @@ function RoomHeader({
 function RoomScreen({
   battleStarted,
   canStartBattle,
+  albumTracks,
+  artistAlbums,
+  artistResults,
+  expandedAlbumId,
   members,
   query,
   searchError,
   searchResults,
   searchMode,
   searching,
+  selectedArtist,
   selectedMemberId,
   sharedList,
   isCurrentUserHost,
   roomIsFull,
   onAddPick,
+  onClearArtist,
+  onSelectArtist,
+  onToggleAlbumTracks,
   onMemberChange,
   onQueryChange,
   onRemovePick,
@@ -608,17 +685,25 @@ function RoomScreen({
 }: {
   battleStarted: boolean;
   canStartBattle: boolean;
+  albumTracks: Record<string, SpotifyTrack[]>;
+  artistAlbums: SpotifyAlbum[];
+  artistResults: SpotifyArtist[];
+  expandedAlbumId: string | null;
   members: RoomMember[];
   query: string;
   searchError: string | null;
   searchResults: MusicPick[];
   searchMode: string;
   searching: boolean;
+  selectedArtist: SpotifyArtist | null;
   selectedMemberId: string;
   sharedList: MusicPick[];
   isCurrentUserHost: boolean;
   roomIsFull: boolean;
   onAddPick: (pick: MusicPick) => void;
+  onClearArtist: () => void;
+  onSelectArtist: (artist: SpotifyArtist) => void;
+  onToggleAlbumTracks: (album: SpotifyAlbum) => void;
   onMemberChange: (memberId: string) => void;
   onQueryChange: (query: string) => void;
   onRemovePick: (id: string) => void;
@@ -692,27 +777,119 @@ function RoomScreen({
         {searching ? <Text style={styles.statusText}>Searching Spotify...</Text> : null}
         {searchError ? <Text style={styles.errorText}>{searchError}</Text> : null}
         <View style={styles.resultList}>
-          {searchResults.map((pick) => {
-            const isAdded = sharedList.some((item) => item.id === pick.id);
-
-            return (
-              <Pressable
-                key={pick.id}
-                disabled={isAdded || battleStarted || roomIsFull}
-                onPress={() => onAddPick(pick)}
-                style={[styles.resultRow, isAdded && styles.resultRowAdded]}
-              >
-                <AlbumArtwork pick={pick} size="small" />
-                <View style={styles.resultText}>
-                  <Text style={styles.artist}>{pick.artist}</Text>
-                  <Text style={styles.album}>{pick.album}</Text>
-                </View>
-                <Text style={styles.addLabel}>
-                  {isAdded ? 'Added' : battleStarted ? 'Locked' : roomIsFull ? 'Full' : 'Add'}
-                </Text>
+          {selectedArtist ? (
+            <View style={styles.browseHeader}>
+              <Text style={styles.browseTitle}>Albums by {selectedArtist.name}</Text>
+              <Pressable onPress={onClearArtist} style={styles.secondaryButton}>
+                <Text style={styles.secondaryButtonText}>Back to artists</Text>
               </Pressable>
-            );
-          })}
+            </View>
+          ) : null}
+
+          {!selectedArtist && artistResults.length > 0 ? (
+            <View>
+              <Text style={styles.resultSectionTitle}>Artists</Text>
+              {artistResults.map((artist) => (
+                <Pressable
+                  key={artist.id}
+                  onPress={() => onSelectArtist(artist)}
+                  style={styles.resultRow}
+                >
+                  <SpotifyImage imageUrl={artist.artworkUrl} label={artist.name} size="small" />
+                  <View style={styles.resultText}>
+                    <Text style={styles.artist}>{artist.name}</Text>
+                    <Text style={styles.album}>View albums and songs</Text>
+                  </View>
+                  <Text style={styles.addLabel}>Albums</Text>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
+
+          {selectedArtist ? (
+            artistAlbums.map((album) => {
+              const isAdded = sharedList.some((item) => item.id === album.id);
+              const tracks = albumTracks[album.albumId] ?? [];
+              const isExpanded = expandedAlbumId === album.albumId;
+
+              return (
+                <View key={album.id} style={styles.albumBrowseGroup}>
+                  <Pressable
+                    disabled={isAdded || battleStarted || roomIsFull}
+                    onPress={() => onAddPick(album)}
+                    style={[styles.resultRow, isAdded && styles.resultRowAdded]}
+                  >
+                    <AlbumArtwork pick={album} size="small" />
+                    <View style={styles.resultText}>
+                      <Text style={styles.artist}>{album.artist}</Text>
+                      <Text style={styles.album}>{album.album}</Text>
+                    </View>
+                    <Text style={styles.addLabel}>
+                      {isAdded ? 'Added' : battleStarted ? 'Locked' : roomIsFull ? 'Full' : 'Add album'}
+                    </Text>
+                  </Pressable>
+                  <Pressable onPress={() => onToggleAlbumTracks(album)} style={styles.songToggle}>
+                    <Text style={styles.songToggleText}>
+                      {isExpanded ? 'Hide songs' : 'Show songs'}
+                    </Text>
+                  </Pressable>
+                  {isExpanded ? (
+                    <View style={styles.trackList}>
+                      {tracks.length === 0 && searching ? (
+                        <Text style={styles.statusText}>Loading songs...</Text>
+                      ) : null}
+                      {tracks.map((track) => {
+                        const trackIsAdded = sharedList.some((item) => item.id === track.id);
+
+                        return (
+                          <Pressable
+                            key={track.id}
+                            disabled={trackIsAdded || battleStarted || roomIsFull}
+                            onPress={() => onAddPick(track)}
+                            style={[styles.trackRow, trackIsAdded && styles.resultRowAdded]}
+                          >
+                            <Text style={styles.trackNumber}>{track.trackNumber}</Text>
+                            <View style={styles.resultText}>
+                              <Text style={styles.artist}>{track.album}</Text>
+                              <Text style={styles.album}>{track.artist}</Text>
+                            </View>
+                            <Text style={styles.addLabel}>
+                              {trackIsAdded ? 'Added' : battleStarted ? 'Locked' : roomIsFull ? 'Full' : 'Add song'}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })
+          ) : (
+            <View>
+              {searchResults.length > 0 ? <Text style={styles.resultSectionTitle}>Albums</Text> : null}
+              {searchResults.map((pick) => {
+                const isAdded = sharedList.some((item) => item.id === pick.id);
+
+                return (
+                  <Pressable
+                    key={pick.id}
+                    disabled={isAdded || battleStarted || roomIsFull}
+                    onPress={() => onAddPick(pick)}
+                    style={[styles.resultRow, isAdded && styles.resultRowAdded]}
+                  >
+                    <AlbumArtwork pick={pick} size="small" />
+                    <View style={styles.resultText}>
+                      <Text style={styles.artist}>{pick.artist}</Text>
+                      <Text style={styles.album}>{pick.album}</Text>
+                    </View>
+                    <Text style={styles.addLabel}>
+                      {isAdded ? 'Added' : battleStarted ? 'Locked' : roomIsFull ? 'Full' : 'Add'}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
         </View>
       </View>
 
@@ -1206,22 +1383,34 @@ function BattleCard({
 }
 
 function AlbumArtwork({ pick, size }: { pick: MusicPick; size: 'small' | 'large' }) {
+  return <SpotifyImage imageUrl={pick.artworkUrl} label={pick.artist} size={size} />;
+}
+
+function SpotifyImage({
+  imageUrl,
+  label,
+  size,
+}: {
+  imageUrl?: string;
+  label: string;
+  size: 'small' | 'large';
+}) {
   const containerStyle = size === 'large' ? styles.largeAlbumArt : styles.albumArt;
   const textStyle = size === 'large' ? styles.largeAlbumArtText : styles.albumArtText;
 
-  if (pick.artworkUrl) {
+  if (imageUrl) {
     return (
       <Image
-        source={{ uri: pick.artworkUrl }}
+        source={{ uri: imageUrl }}
         style={containerStyle}
-        accessibilityLabel={`${pick.album} artwork`}
+        accessibilityLabel={`${label} artwork`}
       />
     );
   }
 
   return (
     <View style={containerStyle}>
-      <Text style={textStyle}>{pick.artist.slice(0, 1)}</Text>
+      <Text style={textStyle}>{label.slice(0, 1)}</Text>
     </View>
   );
 }
@@ -1583,6 +1772,23 @@ const styles = StyleSheet.create({
   resultList: {
     gap: 10,
   },
+  browseHeader: {
+    gap: 10,
+    marginBottom: 2,
+  },
+  browseTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  resultSectionTitle: {
+    color: colors.muted,
+    fontSize: 13,
+    fontWeight: '900',
+    letterSpacing: 0,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
   resultRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1593,6 +1799,43 @@ const styles = StyleSheet.create({
   },
   resultRowAdded: {
     opacity: 0.62,
+  },
+  albumBrowseGroup: {
+    gap: 8,
+  },
+  songToggle: {
+    alignSelf: 'flex-start',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  songToggleText: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  trackList: {
+    gap: 8,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.borderStrong,
+    marginLeft: 18,
+    paddingLeft: 10,
+  },
+  trackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 8,
+    backgroundColor: colors.stage,
+    padding: 10,
+  },
+  trackNumber: {
+    width: 24,
+    color: colors.subtle,
+    fontWeight: '900',
+    textAlign: 'center',
   },
   albumArt: {
     width: 44,
