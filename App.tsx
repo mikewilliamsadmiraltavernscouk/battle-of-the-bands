@@ -163,6 +163,14 @@ export default function App() {
     setExpandedAlbumId(null);
   }
 
+  function changeSpotifyQuery(nextQuery: string) {
+    setQuery(nextQuery);
+    setSelectedArtist(null);
+    setArtistAlbums([]);
+    setAlbumTracks({});
+    setExpandedAlbumId(null);
+  }
+
   useEffect(() => {
     if (screen === 'home' || roomRepositoryMode !== 'supabase') {
       return undefined;
@@ -411,7 +419,7 @@ export default function App() {
             onSelectArtist={selectSpotifyArtist}
             onToggleAlbumTracks={toggleAlbumTracks}
             onMemberChange={setSelectedMemberId}
-            onQueryChange={setQuery}
+            onQueryChange={changeSpotifyQuery}
             onRemovePick={removePick}
             onStartBattle={startBattle}
           />
