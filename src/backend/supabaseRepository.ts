@@ -216,20 +216,31 @@ export function createSupabaseRoomRepository(config: SupabaseConfig): RoomReposi
       if (room.picks.length >= MAX_ROOM_PICKS) {
         throw new Error(`A room can hold up to ${MAX_ROOM_PICKS} bands.`);
       }
+      if (room.picks.some((item) => item.spotifyUrl === pick.spotifyUrl || item.id === pick.id)) {
+        return loadRoomByCode(room.code);
+      }
 
-      await request<SupabaseRow[]>('room_picks', {
-        method: 'POST',
-        body: JSON.stringify({
-          room_id: roomRow.id,
-          added_by_member_id: member.id,
-          spotify_id: getSpotifyId(pick),
-          spotify_uri: pick.spotifyUrl,
-          artist_name: pick.artist,
-          album_name: pick.album,
-          artwork_url: pick.artworkUrl ?? null,
-          seed_order: room.picks.length,
-        }),
-      });
+      try {
+        await request<SupabaseRow[]>('room_picks', {
+          method: 'POST',
+          body: JSON.stringify({
+            room_id: roomRow.id,
+            added_by_member_id: member.id,
+            spotify_id: getSpotifyId(pick),
+            spotify_uri: pick.spotifyUrl,
+            artist_name: pick.artist,
+            album_name: pick.album,
+            artwork_url: pick.artworkUrl ?? null,
+            seed_order: room.picks.length,
+          }),
+        });
+      } catch (error) {
+        if (isDuplicatePickError(error)) {
+          return loadRoomByCode(room.code);
+        }
+
+        throw error;
+      }
 
       return loadRoomByCode(room.code);
     },
@@ -380,4 +391,12 @@ function pickIdToAppId(databasePickId: string, picks: MusicPick[]) {
 
 function getSpotifyId(pick: MusicPick) {
   return pick.spotifyUrl.split(':').at(-1) ?? pick.id;
+}
+
+function isDuplicatePickError(error: unknown) {
+  return error instanceof Error && (
+    error.message.includes('409') ||
+    error.message.includes('23505') ||
+    error.message.includes('room_picks_room_id_spotify_uri_key')
+  );
 }
