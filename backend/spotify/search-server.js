@@ -74,7 +74,7 @@ const server = http.createServer(async (request, response) => {
       const data = await spotifyFetch(accessToken, `/v1/artists/${encodeURIComponent(artistId)}/albums`, {
         include_groups: 'album,single',
         market: 'GB',
-        limit: '30',
+        limit: '20',
       });
       sendJson(response, 200, { albums: (data.items ?? []).map(toAlbumPick) });
       return;
