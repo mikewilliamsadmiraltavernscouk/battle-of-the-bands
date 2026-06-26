@@ -124,6 +124,18 @@ async function main() {
   assert.equal(tournamentRoom.battleHistory.every((item) => item.loserVotes === 0), true);
   assert.equal(tournamentRoom.battleQueue.length, 0);
 
+  let liveAddRoom = await localRoomRepository.createRoom('BAND-LIVE-ADD', 'Alex');
+  liveAddRoom = await localRoomRepository.joinRoom('BAND-LIVE-ADD', 'Jamie');
+  const liveAlex = liveAddRoom.members.find((member) => member.name === 'Alex');
+  assert.ok(liveAlex);
+  liveAddRoom = await localRoomRepository.addPick(liveAddRoom, spotifyResults[0], 'Alex');
+  liveAddRoom = await localRoomRepository.addPick(liveAddRoom, spotifyResults[1], 'Jamie');
+  liveAddRoom = await localRoomRepository.startBattle(liveAddRoom, liveAlex.id);
+  assert.notEqual(liveAddRoom.currentMatch, null);
+  liveAddRoom = await localRoomRepository.addPick(liveAddRoom, spotifyResults[2], 'Alex');
+  assert.equal(liveAddRoom.picks.length, 3);
+  assert.equal(liveAddRoom.battleQueue.some((pick) => pick.id === spotifyResults[2].id), true);
+
   let fullRoom = await localRoomRepository.createRoom('BAND-FULL', 'Alex');
   for (let index = 0; index < MAX_ROOM_PICKS; index += 1) {
     fullRoom = await localRoomRepository.addPick(

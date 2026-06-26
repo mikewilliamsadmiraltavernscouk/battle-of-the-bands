@@ -78,6 +78,7 @@ export default function App() {
   const battleStarted = isBattleStarted(room);
   const roomCanStartBattle = canStartBattle(room);
   const roomIsFull = room.picks.length >= MAX_ROOM_PICKS;
+  const addingClosed = room.champion !== null;
   const majorityNeeded = getMajorityNeeded(room);
   const voteCounts = getVoteCounts(room);
   const matchIsTied = isMatchTied(room);
@@ -442,6 +443,7 @@ export default function App() {
             selectedArtist={selectedArtist}
             selectedMemberId={selectedMemberId}
             sharedList={room.picks}
+            addingClosed={addingClosed}
             isCurrentUserHost={isCurrentUserHost}
             roomIsFull={roomIsFull}
             onAddPick={addPick}
@@ -711,6 +713,7 @@ function RoomScreen({
   selectedArtist,
   selectedMemberId,
   sharedList,
+  addingClosed,
   isCurrentUserHost,
   roomIsFull,
   onAddPick,
@@ -738,6 +741,7 @@ function RoomScreen({
   selectedArtist: SpotifyArtist | null;
   selectedMemberId: string;
   sharedList: MusicPick[];
+  addingClosed: boolean;
   isCurrentUserHost: boolean;
   roomIsFull: boolean;
   onAddPick: (pick: MusicPick) => void;
@@ -807,6 +811,11 @@ function RoomScreen({
             This room is full. Remove a band before adding another one.
           </Text>
         ) : null}
+        {addingClosed ? (
+          <Text style={styles.errorText}>
+            This room has a winner. Reset the battle before adding more music.
+          </Text>
+        ) : null}
         <TextInput
           value={query}
           onChangeText={onQueryChange}
@@ -860,7 +869,7 @@ function RoomScreen({
               return (
                 <View key={album.id} style={styles.albumBrowseGroup}>
                   <Pressable
-                    disabled={isAdded || battleStarted || roomIsFull}
+                    disabled={isAdded || addingClosed || roomIsFull}
                     onPress={() => onAddPick(album)}
                     style={[styles.resultRow, isAdded && styles.resultRowAdded]}
                   >
@@ -870,7 +879,7 @@ function RoomScreen({
                       <Text style={styles.album}>{album.album}</Text>
                     </View>
                     <Text style={styles.addLabel}>
-                      {isAdded ? 'Added' : battleStarted ? 'Locked' : roomIsFull ? 'Full' : 'Add album'}
+                      {isAdded ? 'Added' : addingClosed ? 'Complete' : roomIsFull ? 'Full' : 'Add album'}
                     </Text>
                   </Pressable>
                   <Pressable onPress={() => onToggleAlbumTracks(album)} style={styles.songToggle}>
@@ -889,7 +898,7 @@ function RoomScreen({
                         return (
                           <Pressable
                             key={track.id}
-                            disabled={trackIsAdded || battleStarted || roomIsFull}
+                            disabled={trackIsAdded || addingClosed || roomIsFull}
                             onPress={() => onAddPick(track)}
                             style={[styles.trackRow, trackIsAdded && styles.resultRowAdded]}
                           >
@@ -899,7 +908,7 @@ function RoomScreen({
                               <Text style={styles.album}>{track.artist}</Text>
                             </View>
                             <Text style={styles.addLabel}>
-                              {trackIsAdded ? 'Added' : battleStarted ? 'Locked' : roomIsFull ? 'Full' : 'Add song'}
+                              {trackIsAdded ? 'Added' : addingClosed ? 'Complete' : roomIsFull ? 'Full' : 'Add song'}
                             </Text>
                           </Pressable>
                         );
@@ -918,7 +927,7 @@ function RoomScreen({
                 return (
                   <Pressable
                     key={pick.id}
-                    disabled={isAdded || battleStarted || roomIsFull}
+                    disabled={isAdded || addingClosed || roomIsFull}
                     onPress={() => onAddPick(pick)}
                     style={[styles.resultRow, isAdded && styles.resultRowAdded]}
                   >
@@ -928,7 +937,7 @@ function RoomScreen({
                       <Text style={styles.album}>{pick.album}</Text>
                     </View>
                     <Text style={styles.addLabel}>
-                      {isAdded ? 'Added' : battleStarted ? 'Locked' : roomIsFull ? 'Full' : 'Add'}
+                      {isAdded ? 'Added' : addingClosed ? 'Complete' : roomIsFull ? 'Full' : 'Add'}
                     </Text>
                   </Pressable>
                 );

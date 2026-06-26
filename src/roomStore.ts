@@ -73,14 +73,23 @@ export function addPickToRoom(room: BattleRoom, pick: MusicPick, memberName: str
   if (
     room.picks.length >= MAX_ROOM_PICKS ||
     room.picks.some((item) => item.id === pick.id) ||
-    isBattleStarted(room)
+    room.champion
   ) {
     return room;
   }
 
+  const nextPick = { ...pick, addedBy: memberName };
+  if (room.currentMatch || room.battleQueue.length > 0) {
+    return {
+      ...room,
+      picks: [...room.picks, nextPick],
+      battleQueue: [...room.battleQueue, nextPick],
+    };
+  }
+
   return {
     ...room,
-    picks: [...room.picks, { ...pick, addedBy: memberName }],
+    picks: [...room.picks, nextPick],
   };
 }
 
